@@ -2264,6 +2264,67 @@ function aplicarPersonalizacionGerente() {
 // CARGA DE DATOS
 // ============================================================
 
+async function inicializarDatosGerente() {
+    const gid = getGerenteId();
+    if (!gid) return;
+    
+    try {
+        // 1. inventario_actual
+        const { data: inv } = await db.from('inventario_actual')
+            .select('id').eq('gerente_id', gid).maybeSingle();
+        if (!inv) {
+            await db.from('inventario_actual').insert({
+                gerente_id: gid, total_bodega: 0,
+                total_cargas_vendedores: 0, total_general: 0
+            });
+        }
+        
+        // 2. configuracion
+        const { data: conf } = await db.from('configuracion')
+            .select('id').eq('gerente_id', gid).limit(1);
+        if (!conf || conf.length === 0) {
+            await db.from('configuracion').insert([
+                { clave: 'precio_perfume', valor: '5', descripcion: 'Precio por perfume USD', gerente_id: gid },
+                { clave: 'costo_producto_pesos', valor: '6506', descripcion: 'Costo producto pesos', gerente_id: gid },
+                { clave: 'costo_mercancia_usd', valor: '0.50', descripcion: 'Fondo envío USD', gerente_id: gid },
+                { clave: 'tasa_cambio', valor: '4000', descripcion: 'Tasa de cambio', gerente_id: gid },
+                { clave: 'aporte_caja_ahorro', valor: '0.50', descripcion: 'Aporte caja ahorro', gerente_id: gid },
+                { clave: 'meta_caja_ahorro', valor: '100', descripcion: 'Meta caja ahorro', gerente_id: gid },
+                { clave: 'umbral_bonificacion_diaria', valor: '30', descripcion: 'Umbral bonificación diaria', gerente_id: gid },
+                { clave: 'umbral_wild_star', valor: '150', descripcion: 'Umbral Wild Star', gerente_id: gid }
+            ]);
+        }
+        
+        // 3. rangos
+        const { data: rng } = await db.from('rangos')
+            .select('id').eq('gerente_id', gid).limit(1);
+        if (!rng || rng.length === 0) {
+            await db.from('rangos').insert([
+                { nombre: 'Asesor Comercial', comision_antes_20: 20, comision_despues_20: 30, orden: 1, activo: true, gerente_id: gid },
+                { nombre: 'Entrenador', comision_antes_20: 30, comision_despues_20: 40, orden: 2, activo: true, gerente_id: gid },
+                { nombre: 'Líder', comision_antes_20: 40, comision_despues_20: 50, orden: 3, activo: true, gerente_id: gid },
+                { nombre: 'Gerente', comision_antes_20: 50, comision_despues_20: 50, orden: 4, activo: true, gerente_id: gid }
+            ]);
+        }
+        
+        // 4. comisiones_multinivel
+        const { data: com } = await db.from('comisiones_multinivel')
+            .select('id').eq('gerente_id', gid).limit(1);
+        if (!com || com.length === 0) {
+            await db.from('comisiones_multinivel').insert([
+                { nivel: 1, comision_por_2_unidades: 0.35, descripcion: 'Nivel 1', gerente_id: gid },
+                { nivel: 2, comision_por_2_unidades: 0.21, descripcion: 'Nivel 2', gerente_id: gid },
+                { nivel: 3, comision_por_2_unidades: 0.14, descripcion: 'Nivel 3', gerente_id: gid },
+                { nivel: 4, comision_por_2_unidades: 0.07, descripcion: 'Nivel 4', gerente_id: gid }
+            ]);
+        }
+        
+        console.log('✅ Datos del gerente inicializados correctamente');
+    } catch (err) {
+        console.error('Error inicializando datos del gerente:', err);
+    }
+}
+
 async function cargarDatosIniciales() {
     const rol = localStorage.getItem('rol');
     if (rol !== 'gerente') {
@@ -2272,6 +2333,7 @@ async function cargarDatosIniciales() {
     }
     showLoading();
     try {
+        await inicializarDatosGerente();
         await Promise.all([
             cargarConfiguracion(),
             cargarRangos(),
@@ -2288,9 +2350,9 @@ async function cargarDatosIniciales() {
 }
 
 async function cargarConfiguracion() {
-    const gerenteId = getGerenteId();
-    if (!gerenteId) return;
-    const { data } = await db.from('configuracion').select('*').eq('gerente_id', gerenteId);
+    const gid = getGerenteId();
+    if (!gid) return;
+    const { data } = await db.from('configuracion').select('*').eq('gerente_id', gid);
     if (data) {
         data.forEach(item => {
             configuracion[item.clave] = item.valor;
@@ -2300,7 +2362,10 @@ async function cargarConfiguracion() {
 }
 
 async function cargarRangos() {
-    const { data } = await db.from('rangos').select('*').eq('activo', true).order('orden');
+    const gid = getGerenteId();
+    if (!gid) return;
+    const { data } = await db.from('rangos').select('*')
+        .eq('activo', true).eq('gerente_id', gid).order('orden');
     if (data) {
         rangos = data;
         actualizarSelectRangos();
@@ -2370,8 +2435,12 @@ async function cargarVendedores() {
 }
 
 async function calcularInventarioTotal() {
-    if (!gerenteId) gerenteId = getGerenteId();
-    if (!gerenteId) return;
+    const usuarioId = Number(localStorage.getItem('USUARIO_ID'));
+    const gerenteId = Number(localStorage.getItem('GERENTE_ID'));
+    if (!usuarioId || !gerenteId) {
+        alert('Sesión inválida. Inicia sesión nuevamente.');
+        return;
+    }
     try {
         // Obtener suma de cargas de todos los vendedores
         const { data: cargas } = await db.from('cargas_vendedores')
@@ -2408,22 +2477,36 @@ async function calcularInventarioTotal() {
 
         // Actualizar en la base de datos
         if (invActual) {
-            await db.from('inventario_actual').update({
+            const { data, error } = await db.from('inventario_actual').update({
                 total_cargas_vendedores: totalEnCargas,
                 total_general: totalGeneral,
                 actualizado_en: new Date().toISOString()
             })
                 // 🔐 Filtro por gerente para aislamiento de datos
                 .eq('gerente_id', gerenteId)
-                .eq('id', invActual.id);
+                .eq('id', invActual.id)
+                .select()
+                .single();
+            if (error || !data) {
+                console.error('Error al registrar inventario:', error);
+                alert('No se pudo registrar inventario.');
+                return;
+            }
         } else {
-            await db.from('inventario_actual').insert({
+            const { data, error } = await db.from('inventario_actual').insert({
                 gerente_id: gerenteId,
-                total_bodega: cantidad,
-                total_cargas_vendedores: 0,
-                total_general: cantidad,
+                total_bodega: 0,
+                total_cargas_vendedores: totalEnCargas,
+                total_general: totalEnCargas,
                 actualizado_en: new Date().toISOString()
-            });
+            })
+                .select()
+                .single();
+            if (error || !data) {
+                console.error('Error al registrar inventario:', error);
+                alert('No se pudo registrar inventario.');
+                return;
+            }
         }
 
         // Actualizar UI
@@ -2446,8 +2529,12 @@ async function calcularInventarioTotal() {
 
 async function actualizarCargasVendedor(vendedorId, nuevaCantidad) {
     try {
-        if (!gerenteId) gerenteId = getGerenteId();
-        if (!gerenteId) return;
+        const usuarioId = Number(localStorage.getItem('USUARIO_ID'));
+        const gerenteId = Number(localStorage.getItem('GERENTE_ID'));
+        if (!usuarioId || !gerenteId) {
+            alert('Sesión inválida. Inicia sesión nuevamente.');
+            return;
+        }
         const { data: existente } = await db.from('cargas_vendedores')
             .select('id')
             // ðŸ” Filtro por gerente para aislamiento de datos
@@ -2477,7 +2564,10 @@ async function actualizarCargasVendedor(vendedorId, nuevaCantidad) {
 }
 
 async function cargarCiudades() {
-    const { data } = await db.from('ciudades').select('*').eq('activa', true).order('nombre');
+    const gid = getGerenteId();
+    if (!gid) return;
+    const { data } = await db.from('ciudades').select('*')
+        .eq('activa', true).eq('gerente_id', gid).order('nombre');
     if (data) {
         ciudades = data;
         actualizarSelectCiudades();
@@ -2485,18 +2575,44 @@ async function cargarCiudades() {
 }
 
 async function cargarComisionesMultinivel() {
-    const { data } = await db.from('comisiones_multinivel').select('*').order('nivel');
+    const gid = getGerenteId();
+    if (!gid) return;
+    const { data } = await db.from('comisiones_multinivel').select('*')
+        .eq('gerente_id', gid).order('nivel');
     if (data) comisionesMultinivel = data;
 }
 
 async function cargarInventario() {
-    if (!gerenteId) gerenteId = getGerenteId();
-    if (!gerenteId) return;
-    const { data } = await db.from('inventario_actual')
+    const usuarioId = Number(localStorage.getItem('USUARIO_ID'));
+    const gerenteId = Number(localStorage.getItem('GERENTE_ID'));
+    if (!usuarioId || !gerenteId) {
+        alert('Sesión inválida. Inicia sesión nuevamente.');
+        return;
+    }
+    let { data } = await db.from('inventario_actual')
         .select('*')
         // 🔐 Filtro por gerente para aislamiento de datos
         .eq('gerente_id', gerenteId)
         .maybeSingle();
+    
+    if (!data) {
+        // ✅ Inicializar inventario_actual si no existe para el gerente
+        const { data: creado, error } = await db.from('inventario_actual').insert({
+            gerente_id: gerenteId,
+            total_bodega: 0,
+            total_cargas_vendedores: 0,
+            total_general: 0,
+            actualizado_en: new Date().toISOString()
+        })
+            .select()
+            .single();
+        if (error || !creado) {
+            console.error('Error al registrar inventario:', error);
+            alert('No se pudo registrar inventario.');
+            return;
+        }
+        data = creado;
+    }
     
     const totalBodega = data?.total_bodega || 0;
     const totalCargas = data?.total_cargas_vendedores || 0;
@@ -2806,8 +2922,9 @@ function ajustarCargasVendedor(vendedorId, nombre, cantidadActual) {
 
 // Asignar cargas desde la bodega a un vendedor (resta del inventario de bodega)
 async function asignarCargasDesdeBodera(vendedorId, cantidad) {
-    if (!gerenteId) gerenteId = getGerenteId();
-    if (!gerenteId) return;
+    const session = validarSesionInventario();
+    if (!session) return;
+    const { gerenteId } = session;
     if (!vendedorId) { alert('Seleccione un vendedor'); return; }
     cantidad = parseInt(cantidad) || 0;
     if (cantidad <= 0) { alert('Ingrese una cantidad válida'); return; }
@@ -2837,13 +2954,20 @@ async function asignarCargasDesdeBodera(vendedorId, cantidad) {
         await actualizarCargasVendedor(vendedorId, nuevaCantidad);
 
         // Reducir inventario bodega
-        await db.from('inventario_actual').update({
+        const { data, error } = await db.from('inventario_actual').update({
             total_bodega: Math.max(0, (invActual.total_bodega || 0) - cantidad),
             actualizado_en: new Date().toISOString()
         })
             // 🔐 Filtro por gerente para aislamiento de datos
             .eq('gerente_id', gerenteId)
-            .eq('id', invActual.id);
+            .eq('id', invActual.id)
+            .select()
+            .single();
+        if (error || !data) {
+            console.error('Error al registrar inventario:', error);
+            alert('No se pudo registrar inventario.');
+            return;
+        }
 
         await calcularInventarioTotal();
         await cargarVendedores();
@@ -3255,8 +3379,12 @@ async function guardarReporte() {
             console.log('📦 Actualizando inventario...');
 
             if (totalUnidades > 0) {
-                if (!gerenteId) gerenteId = getGerenteId();
-                if (!gerenteId) return;
+                const session = validarSesionInventario();
+                if (!session) {
+                    hideLoading();
+                    return;
+                }
+                const { usuarioId, gerenteId } = session;
                 const descripcionVentasDia = `Ventas del día ${fecha}`;
                 const { data: salidaVentasExistente, error: errorSalidaVentasExistente } = await db
                     .from('inventario')
@@ -3272,29 +3400,41 @@ async function guardarReporte() {
                 
                 if (salidaVentasExistente) {
                     if ((Number(salidaVentasExistente.cantidad) || 0) !== totalUnidades) {
-                        const { error: errorActualizarSalida } = await db
+                        const { data, error } = await db
                             .from('inventario')
                             .update({
                                 cantidad: totalUnidades,
-                                registrado_por: currentUser.id,
+                                registrado_por: usuarioId,
                                 // 🔐 Filtro por gerente para aislamiento de datos
                                 gerente_id: gerenteId
                             })
                             .eq('gerente_id', gerenteId)
-                            .eq('id', salidaVentasExistente.id);
-                        if (errorActualizarSalida) throw errorActualizarSalida;
+                            .eq('id', salidaVentasExistente.id)
+                            .select()
+                            .single();
+                        if (error || !data) {
+                            console.error('Error al registrar inventario:', error);
+                            alert('No se pudo registrar inventario.');
+                            return;
+                        }
                     }
                 } else {
-                    const { error: errorInsertarSalida } = await db.from('inventario').insert({
+                    const { data, error } = await db.from('inventario').insert({
                         fecha: fecha,
                         tipo: 'SALIDA',
                         cantidad: totalUnidades,
                         descripcion: descripcionVentasDia,
-                        registrado_por: currentUser.id,
+                        registrado_por: usuarioId,
                         // 🔐 Filtro por gerente para aislamiento de datos
                         gerente_id: gerenteId
-                    });
-                    if (errorInsertarSalida) throw errorInsertarSalida;
+                    })
+                        .select()
+                        .single();
+                    if (error || !data) {
+                        console.error('Error al registrar inventario:', error);
+                        alert('No se pudo registrar inventario.');
+                        return;
+                    }
                 }
             }
             
@@ -3327,14 +3467,14 @@ async function guardarReporte() {
 
 async function guardarGananciasMultinivel(reporteId, vendedorId, unidadesVendidas, fechaReporte) {
     if (unidadesVendidas < 2) return;
+    const gid = getGerenteId();
     
     try {
         const vendedor = vendedores.find(v => v.id == vendedorId);
         if (!vendedor) return;
         
         const { data: comisiones } = await db.from('comisiones_multinivel')
-            .select('*')
-            .order('nivel');
+            .select('*').eq('gerente_id', gid).order('nivel');
         
         if (!comisiones || comisiones.length === 0) return;
         
@@ -3356,7 +3496,8 @@ async function guardarGananciasMultinivel(reporteId, vendedorId, unidadesVendida
                     nivel: nivel,
                     unidades_vendidas: unidadesVendidas,
                     ganancia: ganancia,
-                    fecha: fechaReporte
+                    fecha: fechaReporte,
+                    gerente_id: gid
                 });
             }
             
@@ -3370,6 +3511,7 @@ async function guardarGananciasMultinivel(reporteId, vendedorId, unidadesVendida
 }
 
 async function actualizarCajaAhorro(vendedorId, monto) {
+    const gid = getGerenteId();
     try {
         const { data: cajaExistente } = await db.from('caja_ahorro')
             .select('*')
@@ -3385,7 +3527,8 @@ async function actualizarCajaAhorro(vendedorId, monto) {
         } else {
             await db.from('caja_ahorro').insert({
                 vendedor_id: vendedorId,
-                total_acumulado: monto
+                total_acumulado: monto,
+                gerente_id: gid
             });
         }
     } catch (err) {
@@ -3394,22 +3537,33 @@ async function actualizarCajaAhorro(vendedorId, monto) {
 }
 
 async function actualizarInventarioDespuesVentas(unidadesVendidas) {
-    if (!gerenteId) gerenteId = getGerenteId();
-    if (!gerenteId) return;
+    const usuarioId = Number(localStorage.getItem('USUARIO_ID'));
+    const gerenteId = Number(localStorage.getItem('GERENTE_ID'));
+    if (!usuarioId || !gerenteId) {
+        alert('Sesión inválida. Inicia sesión nuevamente.');
+        return;
+    }
     const { data: invActual } = await db.from('inventario_actual')
         .select('*')
         // 🔐 Filtro por gerente para aislamiento de datos
         .eq('gerente_id', gerenteId)
         .maybeSingle();
     if (invActual) {
-        await db.from('inventario_actual').update({
+        const { data, error } = await db.from('inventario_actual').update({
             total_general: Math.max(0, invActual.total_general - unidadesVendidas),
             total_bodega: Math.max(0, invActual.total_bodega - unidadesVendidas),
             actualizado_en: new Date().toISOString()
         })
             // 🔐 Filtro por gerente para aislamiento de datos
             .eq('gerente_id', gerenteId)
-            .eq('id', invActual.id);
+            .eq('id', invActual.id)
+            .select()
+            .single();
+        if (error || !data) {
+            console.error('Error al registrar inventario:', error);
+            alert('No se pudo registrar inventario.');
+            return;
+        }
     }
 }
 
@@ -3566,7 +3720,7 @@ async function guardarNuevoVendedor() {
         
         if (error) throw error;
         
-        await db.from('caja_ahorro').insert({ vendedor_id: data.id, total_acumulado: 0 });
+        await db.from('caja_ahorro').insert({ vendedor_id: data.id, total_acumulado: 0, gerente_id: gerenteId });
         
         alert('Vendedor creado exitosamente!');
         bootstrap.Modal.getInstance(document.getElementById('modalNuevoVendedor')).hide();
@@ -3786,6 +3940,8 @@ function actualizarSelectCiudades() {
 }
 
 async function agregarCiudad() {
+    const gid = getGerenteId();
+    if (!gid) return;
     const nombre = document.getElementById('nuevaCiudad').value.trim();
     if (!nombre) {
         alert('Ingrese el nombre de la ciudad.');
@@ -3794,7 +3950,7 @@ async function agregarCiudad() {
     
     showLoading();
     try {
-        await db.from('ciudades').insert({ nombre });
+        await db.from('ciudades').insert({ nombre, gerente_id: gid });
         document.getElementById('nuevaCiudad').value = '';
         await cargarCiudades();
         alert('Ciudad agregada!');
@@ -3808,9 +3964,21 @@ async function agregarCiudad() {
 // INVENTARIO
 // ============================================================
 
+function validarSesionInventario() {
+    // ✅ Validar sesión y gerente antes de operar inventario
+    const usuarioId = Number(localStorage.getItem('USUARIO_ID'));
+    const gerenteId = Number(localStorage.getItem('GERENTE_ID'));
+    if (!usuarioId || !gerenteId) {
+        alert('Sesión inválida. Inicia sesión nuevamente.');
+        return null;
+    }
+    return { usuarioId, gerenteId };
+}
+
 async function agregarInventario() {
-    if (!gerenteId) gerenteId = getGerenteId();
-    if (!gerenteId) return;
+    const session = validarSesionInventario();
+    if (!session) return;
+    const { usuarioId, gerenteId } = session;
     const cantidad = parseInt(document.getElementById('cantidadInventario').value);
     const descripcion = document.getElementById('descripcionInventario').value;
     
@@ -3821,15 +3989,23 @@ async function agregarInventario() {
     
     showLoading();
     try {
-        await db.from('inventario').insert({
+        const { data: movimiento, error } = await db.from('inventario').insert({
             fecha: getFechaActual(),
             tipo: 'ENTRADA',
             cantidad,
             descripcion,
-            registrado_por: currentUser.id,
+            registrado_por: usuarioId,
             // 🔐 Filtro por gerente para aislamiento de datos
             gerente_id: gerenteId
-        });
+        })
+            .select()
+            .single();
+        
+        if (error || !movimiento) {
+            console.error('Error al registrar inventario:', error);
+            alert('No se pudo registrar inventario.');
+            return;
+        }
         
         const { data: invActual } = await db.from('inventario_actual')
             .select('*')
@@ -3838,22 +4014,36 @@ async function agregarInventario() {
             .maybeSingle();
         
         if (invActual) {
-            await db.from('inventario_actual').update({
+            const { data, error } = await db.from('inventario_actual').update({
                 total_bodega: (invActual.total_bodega || 0) + cantidad,
                 total_general: (invActual.total_general || 0) + cantidad,
                 actualizado_en: new Date().toISOString()
             })
                 // 🔐 Filtro por gerente para aislamiento de datos
                 .eq('gerente_id', gerenteId)
-                .eq('id', invActual.id);
+                .eq('id', invActual.id)
+                .select()
+                .single();
+            if (error || !data) {
+                console.error('Error al registrar inventario:', error);
+                alert('No se pudo registrar inventario.');
+                return;
+            }
         } else {
-            await db.from('inventario_actual').insert({
+            const { data, error } = await db.from('inventario_actual').insert({
                 gerente_id: gerenteId,
                 total_bodega: cantidad,
                 total_cargas_vendedores: 0,
                 total_general: cantidad,
                 actualizado_en: new Date().toISOString()
-            });
+            })
+                .select()
+                .single();
+            if (error || !data) {
+                console.error('Error al registrar inventario:', error);
+                alert('No se pudo registrar inventario.');
+                return;
+            }
         }
         
         document.getElementById('cantidadInventario').value = '';
@@ -3869,8 +4059,9 @@ async function agregarInventario() {
 
 // CORRECCIÓN 5: Función para salida de inventario
 async function registrarSalidaInventario() {
-    if (!gerenteId) gerenteId = getGerenteId();
-    if (!gerenteId) return;
+    const session = validarSesionInventario();
+    if (!session) return;
+    const { usuarioId, gerenteId } = session;
     const cantidad = parseInt(document.getElementById('cantidadSalida').value);
     const motivo = document.getElementById('motivoSalida').value.trim();
     
@@ -3886,15 +4077,23 @@ async function registrarSalidaInventario() {
     
     showLoading();
     try {
-        await db.from('inventario').insert({
+        const { data: movimiento, error } = await db.from('inventario').insert({
             fecha: getFechaActual(),
             tipo: 'SALIDA',
             cantidad: cantidad,
             descripcion: motivo,
-            registrado_por: currentUser.id,
+            registrado_por: usuarioId,
             // 🔐 Filtro por gerente para aislamiento de datos
             gerente_id: gerenteId
-        });
+        })
+            .select()
+            .single();
+        
+        if (error || !movimiento) {
+            console.error('Error al registrar inventario:', error);
+            alert('No se pudo registrar inventario.');
+            return;
+        }
         
         const { data: invActual } = await db.from('inventario_actual')
             .select('*')
@@ -3903,22 +4102,36 @@ async function registrarSalidaInventario() {
             .maybeSingle();
         
         if (invActual) {
-            await db.from('inventario_actual').update({
+            const { data, error } = await db.from('inventario_actual').update({
                 total_bodega: Math.max(0, (invActual.total_bodega || 0) - cantidad),
                 total_general: Math.max(0, (invActual.total_general || 0) - cantidad),
                 actualizado_en: new Date().toISOString()
             })
                 // 🔐 Filtro por gerente para aislamiento de datos
                 .eq('gerente_id', gerenteId)
-                .eq('id', invActual.id);
+                .eq('id', invActual.id)
+                .select()
+                .single();
+            if (error || !data) {
+                console.error('Error al registrar inventario:', error);
+                alert('No se pudo registrar inventario.');
+                return;
+            }
         } else {
-            await db.from('inventario_actual').insert({
+            const { data, error } = await db.from('inventario_actual').insert({
                 gerente_id: gerenteId,
                 total_bodega: 0,
                 total_cargas_vendedores: 0,
                 total_general: 0,
                 actualizado_en: new Date().toISOString()
-            });
+            })
+                .select()
+                .single();
+            if (error || !data) {
+                console.error('Error al registrar inventario:', error);
+                alert('No se pudo registrar inventario.');
+                return;
+            }
         }
         
         document.getElementById('cantidadSalida').value = '';
@@ -3933,8 +4146,9 @@ async function registrarSalidaInventario() {
 }
 
 async function cargarHistorialInventario() {
-    if (!gerenteId) gerenteId = getGerenteId();
-    if (!gerenteId) return;
+    const session = validarSesionInventario();
+    if (!session) return;
+    const { gerenteId } = session;
     const { data } = await db.from('inventario')
         .select('*, admin:usuarios(nombre)')
         // 🔐 Filtro por gerente para aislamiento de datos
@@ -4299,6 +4513,8 @@ function previewFotoWildStar(e) {
 }
 
 async function guardarWildStar() {
+    const gid = getGerenteId();
+    if (!gid) return;
     const nombre = document.getElementById('nombreWildStar').value;
     const descripcion = document.getElementById('descripcionWildStar').value;
     const meta = document.getElementById('metaWildStar').value;
@@ -4314,9 +4530,15 @@ async function guardarWildStar() {
         const semanaInicio = inicioSemana.toISOString().split('T')[0];
         const semanaFin = finSemana.toISOString().split('T')[0];
         
-        const { data: existente } = await db.from('bonificaciones_semanales').select('id').eq('semana_inicio', semanaInicio).maybeSingle();
+        const { data: existente } = await db.from('bonificaciones_semanales')
+            .select('id').eq('semana_inicio', semanaInicio)
+            .eq('gerente_id', gid).maybeSingle();
         
-        const bonificacionData = { semana_inicio: semanaInicio, semana_fin: semanaFin, nombre_premio: nombre, descripcion_premio: descripcion, meta_unidades: meta };
+        const bonificacionData = { 
+            semana_inicio: semanaInicio, semana_fin: semanaFin, 
+            nombre_premio: nombre, descripcion_premio: descripcion, 
+            meta_unidades: meta, gerente_id: gid 
+        };
         
         if (existente) {
             await db.from('bonificaciones_semanales').update(bonificacionData).eq('id', existente.id);
@@ -4394,8 +4616,12 @@ async function cargarRankingSemanal() {
 }
 
 async function cargarGanadoresAnteriores() {
+    const gid = getGerenteId();
+    if (!gid) return;
     try {
-        const { data: ganadores } = await db.from('bonificaciones_semanales').select('*').eq('otorgado', true).order('semana_inicio', { ascending: false }).limit(5);
+        const { data: ganadores } = await db.from('bonificaciones_semanales')
+            .select('*').eq('otorgado', true).eq('gerente_id', gid)
+            .order('semana_inicio', { ascending: false }).limit(5);
         const container = document.getElementById('ganadoresAnteriores');
         
         if (!ganadores || ganadores.length === 0) {
@@ -4664,6 +4890,8 @@ function actualizarCamposConfiguracion() {
 }
 
 async function guardarConfiguracion() {
+    const gid = getGerenteId();
+    if (!gid) return;
     showLoading();
     try {
         const configs = [
@@ -4678,7 +4906,10 @@ async function guardarConfiguracion() {
         ];
         
         for (const config of configs) {
-            await db.from('configuracion').update({ valor: config.valor, actualizado_en: new Date().toISOString() }).eq('clave', config.clave);
+            await db.from('configuracion')
+                .update({ valor: config.valor })
+                .eq('clave', config.clave)
+                .eq('gerente_id', gid);
         }
         
         await cargarConfiguracion();
